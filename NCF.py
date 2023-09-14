@@ -182,7 +182,7 @@ for epoch in range(nb_epochs + 1):
         user_train, item_train, y_train = samples
           
           # prediction 계산
-        prediction = model(user_train, item_train)
+        prediction = model(user_train, item_train, "ncf")
 
         # loss 계산
         loss = nn.BCELoss()(prediction.squeeze(), y_train)
@@ -215,26 +215,55 @@ class NCF(torch.nn.Module):
         self.layer.append(nn.Linear(32, predictive_factor*4))
         self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
         self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
-        self.layer.append(nn.Linear(predictive_factor+16, 1))
+        self.MLP_outlayer = nn.Linear(predictive_factor, 1, bias=False)
+        self.GMF_outlayer = nn.Linear(16, 1, bias=False)
+        nn.init.normal_(self.layer[0].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[1].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[2].weight, mean=0, std=0.01)
+        nn.init.normal_(self.MLP_user_embedding.weight, mean=0, std=0.01)
+        nn.init.normal_(self.MLP_item_embedding.weight, mean=0, std=0.01)
+        nn.init.normal_(self.GMF_user_embedding.weight, mean=0, std=0.01)
+        nn.init.normal_(self.GMF_item_embedding.weight, mean=0, std=0.01)
+        nn.init.normal_(self.MLP_outlayer.weight, mean=0, std=0.01)
+        nn.init.normal_(self.GMF_outlayer.weight, mean=0, std=0.01)
 
-    def forward(self,U,I):
-        p_g = self.GMF_user_embedding(U)
-        q_g = self.GMF_item_embedding(I)
-        p_m = self.MLP_user_embedding(U)
-        q_m = self.MLP_item_embedding(I)
-        out_m = torch.cat((p_m,q_m),1)
+    def forward(self, U, I, pretrain):
+        if pretrain == "mlp" :
+            p_m = self.MLP_user_embedding(U)
+            q_m = self.MLP_item_embedding(I)
+            out_m = torch.cat((p_m,q_m),1)
+            for layer in self.layer :
+                out_m = F.relu(layer(out_m))
+                
+            out = F.sigmoid(self.MLP_outlayer(out_m))
         
-        for layer in self.layer[:-1] :
-            out_m = F.relu(layer(out_m)) 
-        
-        out_g = p_g*q_g
-        
-        out = torch.cat((out_g, out_m),1)
+        if pretrain == "gmf" :    
+            p_g = self.GMF_user_embedding(U)
+            q_g = self.GMF_item_embedding(I)
+            out_g = p_g*q_g
+            out = F.sigmoid(self.GMF_outlayer(out_g))
             
-        out = F.sigmoid(self.layer[-1](out))
-
+        if pretrain == "ncf" :
+            p_m = self.MLP_user_embedding(U)
+            q_m = self.MLP_item_embedding(I)
+            out_m = torch.cat((p_m,q_m),1)
+            for layer in self.layer :
+                out_m = F.relu(layer(out_m))
+            out_m = self.MLP_outlayer(out_m)
+            
+            p_g = self.GMF_user_embedding(U)
+            q_g = self.GMF_item_embedding(I)
+            out_g = p_g*q_g
+            
+            out_g = self.GMF_outlayer(out_g)
+                
+            out = F.sigmoid((0.5*out_m + 0.5*out_g))
+            
         return out
 #%%
 
 model = NCF(30, 18, 8)  
+optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+
+# %%

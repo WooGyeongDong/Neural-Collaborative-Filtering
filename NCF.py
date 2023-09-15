@@ -15,25 +15,95 @@ ratings = pd.read_csv('ml-1m/ratings.dat', delimiter='::', header=None,
     names=['user_id', 'movie_id', 'rating', 'timestamp'], 
     usecols=['user_id', 'movie_id'], engine='python')  ##encoding latin1
 
-users = pd.read_csv('ml-1m/users.dat', delimiter='::', header=None, 
-    names=['user_id', 'gender', 'age', 'occupation', 'zipcode'], 
-    usecols=['user_id', 'gender', 'age', 'occupation'], engine='python', index_col=['user_id'])
-
-movies = pd.read_csv('ml-1m/movies.dat', delimiter='::', header=None, 
-    names=['movie_id', 'title', 'genres'], 
-    usecols=['movie_id', 'genres'], engine='python', index_col=['movie_id'])
 #%%
-####영화를 장르로 one-hot encoding
-movies_genre_iter = (set(x.split(',')) for x in movies.genres)
-movies_genre_set = sorted(set.union(*movies_genre_iter))
-indicator_mat = pd.DataFrame(np.zeros((len(movies), len(movies_genre_set))), columns=movies_genre_set)
-for i, genre in enumerate(movies.genres):
-    indicator_mat.loc[i, genre.split(',')] = 1
-    
-movies_onehot = movies.join(indicator_mat).drop(columns=['genres'])
 
-#### user one-hot encoding
-users_onehot = pd.get_dummies(users, columns=['gender', 'age', 'occupation'], )
+test_rating = ratings.copy()
+test_rating = test_rating.drop_duplicates(subset=['user_id'], keep='last')
+train_rating = ratings.copy()
+train_rating = pd.concat([train_rating, test_rating])
+train_rating = train_rating.drop_duplicates(keep=False)
+
+class CustomDataset(Dataset):
+    def __init__(self, ratings, num_negative):
+        self.ratings = ratings
+        self.num_negative = num_negative
+        self.users, self.items, self.labels = self.data()
+        
+    def __len__(self):
+        return len(self.ratings)
+    
+    def __getitem__(self, index):
+        return self.users[index], self.items[index], self.labels[index]
+        
+    def data(self):
+        users = self.ratings.drop_duplicates(subset=['user_id']).drop(columns=['movie_id'])
+        users_onehot = pd.get_dummies(users, columns=['user_id'])
+        users_onehot.index = users.user_id
+        movies = self.ratings.drop_duplicates(subset=['movie_id']).drop(columns=['user_id'])
+        movies_onehot = pd.get_dummies(movies, columns=['movie_id'])
+        movies_onehot.index = movies.movie_id
+        total = set(zip(self.ratings.user_id, self.ratings.movie_id))
+        
+        user = pd.DataFrame()
+        item = pd.DataFrame()  
+        y = pd.DataFrame()
+        for i in range(len(self.ratings)):
+            u = self.ratings.user_id.iloc[i]
+            m = self.ratings.movie_id.iloc[i]
+        
+            user = pd.concat([user ,users_onehot.loc[u,:]], axis=1)
+            item = pd.concat([item, movies_onehot.loc[m,:]], axis=1)
+            y = pd.concat([y, pd.DataFrame([1])])
+
+            #negative sampling    
+            for _ in range(self.num_negative):
+                rv = random.choice(movies.values.squeeze())
+                while((u, rv) in total) :
+                    rv = random.choice(movies.values.squeeze())
+                user = pd.concat([user, users_onehot.loc[u,:]], axis=1)
+                item = pd.concat([item, movies_onehot.loc[rv,:]], axis=1)
+                y = pd.concat([y, pd.DataFrame([0])]) 
+                
+        user = user.T
+        item = item.T
+        
+        return torch.FloatTensor(user), torch.FloatTensor(item), torch.FloatTensor(y)
+
+dataset = CustomDataset(ratings, 4)
+dataset[1]
+
+users = ratings.drop_duplicates(subset=['user_id'], keep='last').drop(columns=['movie_id'])
+users_onehot = pd.get_dummies(users, columns=['user_id'])
+users_onehot.index = users.user_id
+movies = ratings.drop_duplicates(subset=['movie_id']).drop(columns=['user_id'])
+movies_onehot = pd.get_dummies(movies, columns=['movie_id'])
+movies_onehot.index = movies.movie_id
+
+
+total = set(zip(ratings.user_id, ratings.movie_id))
+
+#%%
+user = pd.DataFrame()
+item = pd.DataFrame()  
+y = pd.DataFrame()
+for i in range(10):
+    u = ratings.user_id.iloc[i]
+    m = ratings.movie_id.iloc[i]
+   
+    user = pd.concat([user ,users_onehot.loc[u,:]], axis=1)
+    item = pd.concat([item, movies_onehot.loc[m,:]], axis=1)
+    y = pd.concat([y, pd.DataFrame([1])])
+
+    #negative sampling    
+    for _ in range(4):
+        rv = random.choice(movies.values.squeeze())
+        while((u, rv) in total) :
+            rv = random.choice(movies.values.squeeze())
+        user = pd.concat([user, users_onehot.loc[u,:]], axis=1)
+        item = pd.concat([item, movies_onehot.loc[rv,:]], axis=1)
+        y = pd.concat([y, pd.DataFrame([0])]) 
+            
+#%%
 
 last = 1
 user = pd.DataFrame()
@@ -44,26 +114,27 @@ user_eval = pd.DataFrame()
 item_eval = pd.DataFrame()
 y_eval = pd.DataFrame()
 
-check = pd.DataFrame(columns=['y'])
+check = []
+i=1
+j=0
 for i in range(len(ratings)):
-    if last == ratings.user_id.iloc[i+1] :
-        user.append(users_onehot.loc[ratings.iloc[i].user_id,:])
-        item.append(movies_onehot.loc[ratings.movie_id.iloc[i],:])
-        y = pd.concat(y, bpd.DataFrame([1]))
-        check.append(ratings.movie_id.iloc[i])
+
+    user = pd.concat([user ,users_onehot.loc[ratings.iloc[i].user_id,:]], axis=1)
+    item = pd.concat([item, movies_onehot.loc[ratings.movie_id.iloc[i],:]], axis=1)
+    y = pd.concat([y, pd.DataFrame([1])])
+    check.append(ratings.movie_id.iloc[i])
     
-    else :
-        while():
-            rv = random.choice(movies.index)
-            if rv not in check:
-                user.append(users_onehot.loc[last,:])
-                item.append(movies_onehot.loc[rv,:])
-                y.append(0)
-        user_eval.append(users_onehot.loc[ratings.iloc[i].user_id,:])
-        item_eval.append(movies_onehot.loc[ratings.movie_id.iloc[i],:])
-        y_eval.append(1)
-        
-        last = ratings.user_id.iloc[i+1]
+    for _ in range(len(check)*4):
+        rv = random.choice(movies.index)
+        if rv not in check:
+            user = pd.concat([user, users_onehot.loc[last,:]])
+            item = pd.concat([item, movies_onehot.loc[rv,:]])
+            y = pd.concat([y, pd.DataFrame([0])])
+            
+           
+                
+    check = []
+    last = ratings.user_id.iloc[i+1]
 #%%
 ##### user*movie interaction matrix
 # y_mat = pd.DataFrame(np.zeros((len(users), len(movies))), columns=movies.movie_id, index=users.user_id)

@@ -8,7 +8,7 @@ from torch.utils.data import DataLoader
 
 import pandas as pd
 import numpy as np
-import copy
+import random
 #%%
 ####load the MovieLens 1m dataset in a Pandas dataframe
 ratings = pd.read_csv('ml-1m/ratings.dat', delimiter='::', header=None, 
@@ -17,11 +17,11 @@ ratings = pd.read_csv('ml-1m/ratings.dat', delimiter='::', header=None,
 
 users = pd.read_csv('ml-1m/users.dat', delimiter='::', header=None, 
     names=['user_id', 'gender', 'age', 'occupation', 'zipcode'], 
-    usecols=['user_id', 'gender', 'age', 'occupation'], engine='python')
+    usecols=['user_id', 'gender', 'age', 'occupation'], engine='python', index_col=['user_id'])
 
 movies = pd.read_csv('ml-1m/movies.dat', delimiter='::', header=None, 
     names=['movie_id', 'title', 'genres'], 
-    usecols=['movie_id', 'genres'], engine='python')
+    usecols=['movie_id', 'genres'], engine='python', index_col=['movie_id'])
 #%%
 ####영화를 장르로 one-hot encoding
 movies_genre_iter = (set(x.split(',')) for x in movies.genres)
@@ -33,7 +33,37 @@ for i, genre in enumerate(movies.genres):
 movies_onehot = movies.join(indicator_mat).drop(columns=['genres'])
 
 #### user one-hot encoding
-users_onehot = pd.get_dummies(users, columns=['gender', 'age', 'occupation'])
+users_onehot = pd.get_dummies(users, columns=['gender', 'age', 'occupation'], )
+
+last = 1
+user = pd.DataFrame()
+item = pd.DataFrame()
+y = pd.DataFrame()
+
+user_eval = pd.DataFrame()
+item_eval = pd.DataFrame()
+y_eval = pd.DataFrame()
+
+check = pd.DataFrame(columns=['y'])
+for i in range(len(ratings)):
+    if last == ratings.user_id.iloc[i+1] :
+        user.append(users_onehot.loc[ratings.iloc[i].user_id,:])
+        item.append(movies_onehot.loc[ratings.movie_id.iloc[i],:])
+        y = pd.concat(y, bpd.DataFrame([1]))
+        check.append(ratings.movie_id.iloc[i])
+    
+    else :
+        while():
+            rv = random.choice(movies.index)
+            if rv not in check:
+                user.append(users_onehot.loc[last,:])
+                item.append(movies_onehot.loc[rv,:])
+                y.append(0)
+        user_eval.append(users_onehot.loc[ratings.iloc[i].user_id,:])
+        item_eval.append(movies_onehot.loc[ratings.movie_id.iloc[i],:])
+        y_eval.append(1)
+        
+        last = ratings.user_id.iloc[i+1]
 #%%
 ##### user*movie interaction matrix
 # y_mat = pd.DataFrame(np.zeros((len(users), len(movies))), columns=movies.movie_id, index=users.user_id)
@@ -53,11 +83,11 @@ item = pd.concat([movies_onehot]*len(users_onehot)).drop(columns=['movie_id'])
 target = pd.DataFrame(y_mat.to_numpy().flatten())
 target.columns = ["y"]
 
-# all = pd.DataFrame()
-# for i in range(100):
-#     if target.iloc[i,0] == 1 :
-#         temp = pd.concat([user.drop(columns=['user_id']).iloc[i],item.drop(columns=['movie_id']).iloc[i,:],target.iloc[i,:]])
-#         all = pd.concat([all,temp], axis=1)
+all = pd.DataFrame()
+for i in range(len(target)):
+    if target.iloc[i,0] == 1 :
+        temp = pd.concat([user.iloc[i],item.iloc[i,:],target.iloc[i,:]])
+        all = pd.concat([all,temp], axis=1)
 
 # all = pd.concat([user.drop(columns=['user_id']),item.drop(columns=['movie_id']),target],axis=1)
 
@@ -95,8 +125,6 @@ for batch_idx, samples in enumerate(dataloader):
     negative = negative[:len(positive)*4]
     data = torch.cat([data, positive, negative], dim = 0)
     
-    if batch_idx == 100 :
-        break
 data = data[1:]
 data.shape
 #%%
@@ -122,88 +150,8 @@ train_dataset = NCFDataset(data)
 
 train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True)
 
-
-#%%
-class MLP(torch.nn.Module):
-    def __init__(self, user_d, item_d, predictive_factor):
-        super().__init__()
-        self.layer = nn.ModuleList()
-        self.user_embedding = nn.Linear(user_d, 16)
-        self.item_embedding = nn.Linear(item_d, 16)
-        self.layer.append(nn.Linear(32, predictive_factor*4))
-        self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
-        self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
-        self.layer.append(nn.Linear(predictive_factor, 1))
-
-    def forward(self,U,I):
-        p = self.user_embedding(U)
-        q = self.item_embedding(I)
-        out = torch.cat((p,q),1)
-        
-        for layer in self.layer[:-1] :
-            out = F.relu(layer(out)) 
-            
-        out = F.sigmoid(self.layer[-1](out))
-
-        return out
-#%%
-  
-class GMF(torch.nn.Module):
-    def __init__(self, user_d, item_d) -> None:
-        super().__init__()
-        self.user_embedding = nn.Linear(user_d, 16)
-        self.item_embedding = nn.Linear(item_d, 16)
-        self.outlayer = nn.Linear(16,1)
-        
-        
-    def forward(self, U, I):
-        p = self.user_embedding(U)
-        q = self.item_embedding(I)
-        out = p*q
-        out = self.outlayer(out) 
-        out = F.sigmoid(out)
-        
-        return out
 #%%
 
-model = MLP(30, 18, 8)
-model = GMF(30, 18) 
-            
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-
-#%%
-
-total_loss = []
-nb_epochs = 100               
-for epoch in range(nb_epochs + 1):
-    sum_loss = 0
-    for samples in train_dataloader:
-      
-        user_train, item_train, y_train = samples
-          
-          # prediction 계산
-        prediction = model(user_train, item_train, "ncf")
-
-        # loss 계산
-        loss = nn.BCELoss()(prediction.squeeze(), y_train)
-
-        # parameter 조정
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
-
-        sum_loss += loss.item()
-        
-        
-    if epoch % 10 == 0:
-        print('Epoch {:4d}/{} Loss: {:.6f}'.format(
-        epoch, nb_epochs, sum_loss/len(train_dataloader)))
-    total_loss.append(sum_loss/len(train_dataloader))
-      
-#%%       
-import matplotlib.pyplot as plt
-plt.plot(total_loss)
-# %%
 class NCF(torch.nn.Module):
     def __init__(self, user_d, item_d, predictive_factor):
         super().__init__()
@@ -264,6 +212,42 @@ class NCF(torch.nn.Module):
 
 model = NCF(30, 18, 8)  
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
+# optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
 
+# %%
+nb_epochs = 100
+best_loss = 10 ** 9 # 매우 큰 값으로 초기값 가정
+patience_limit = 3 # 몇 번의 epoch까지 지켜볼지를 결정
+patience_check = 0 # 현재 몇 epoch 연속으로 loss 개선이 안되는지를 기록
+val = []
+total_loss = []
+            
+for epoch in range(nb_epochs + 1):
+    sum_loss = 0
+    for samples in train_dataloader:
+      
+        user_train, item_train, y_train = samples
+          
+        # prediction 계산
+        prediction = model(user_train, item_train, "mlp")
+
+        # loss 계산
+        loss = nn.BCELoss()(prediction.squeeze(), y_train)
+
+        # parameter 조정
+        optimizer.zero_grad()
+        loss.backward()
+        optimizer.step()
+
+        sum_loss += loss.item()
+        
+        
+    if epoch % 10 == 0:
+        print('Epoch {:4d}/{} Loss: {:.6f}'.format(
+        epoch, nb_epochs, sum_loss/len(train_dataloader)))
+    total_loss.append(sum_loss/len(train_dataloader))
+      
+#%%       
+import matplotlib.pyplot as plt
+plt.plot(total_loss)
 # %%

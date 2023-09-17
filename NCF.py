@@ -9,6 +9,8 @@ from torch.utils.data import DataLoader
 import pandas as pd
 import numpy as np
 import random
+from tqdm import tqdm
+import copy
 #%%
 ####load the MovieLens 1m dataset in a Pandas dataframe
 ratings = pd.read_csv('ml-1m/ratings.dat', delimiter='::', header=None, 
@@ -22,6 +24,11 @@ test_rating = test_rating.drop_duplicates(subset=['user_id'], keep='last')
 train_rating = ratings.copy()
 train_rating = pd.concat([train_rating, test_rating])
 train_rating = train_rating.drop_duplicates(keep=False)
+val_rating = train_rating.copy()
+val_rating = val_rating.sample(frac=1, ignore_index= True)
+val_rating = val_rating.drop_duplicates(subset=['user_id'])
+
+#%%
 
 class CustomDataset(Dataset):
     def __init__(self, ratings, num_negative):
@@ -30,7 +37,7 @@ class CustomDataset(Dataset):
         self.users, self.items, self.labels = self.data()
         
     def __len__(self):
-        return len(self.ratings)
+        return len(self.users)
     
     def __getitem__(self, index):
         return self.users[index], self.items[index], self.labels[index]
@@ -44,9 +51,8 @@ class CustomDataset(Dataset):
         movies_onehot.index = movies.movie_id
         total = set(zip(self.ratings.user_id, self.ratings.movie_id))
         
-        user = pd.DataFrame()
-        item = pd.DataFrame()  
-        y = pd.DataFrame()
+        user, item, y= [], [], []
+        
         for i in range(len(self.ratings)):
             u = self.ratings.user_id.iloc[i]
             m = self.ratings.movie_id.iloc[i]
@@ -69,157 +75,56 @@ class CustomDataset(Dataset):
         
         return torch.FloatTensor(user), torch.FloatTensor(item), torch.FloatTensor(y)
 
-dataset = CustomDataset(ratings, 4)
-dataset[1]
-
-users = ratings.drop_duplicates(subset=['user_id'], keep='last').drop(columns=['movie_id'])
-users_onehot = pd.get_dummies(users, columns=['user_id'])
-users_onehot.index = users.user_id
-movies = ratings.drop_duplicates(subset=['movie_id']).drop(columns=['user_id'])
-movies_onehot = pd.get_dummies(movies, columns=['movie_id'])
-movies_onehot.index = movies.movie_id
-
-
-total = set(zip(ratings.user_id, ratings.movie_id))
 
 #%%
-user = pd.DataFrame()
-item = pd.DataFrame()  
-y = pd.DataFrame()
-for i in range(10):
-    u = ratings.user_id.iloc[i]
-    m = ratings.movie_id.iloc[i]
-   
-    user = pd.concat([user ,users_onehot.loc[u,:]], axis=1)
-    item = pd.concat([item, movies_onehot.loc[m,:]], axis=1)
-    y = pd.concat([y, pd.DataFrame([1])])
-
-    #negative sampling    
-    for _ in range(4):
-        rv = random.choice(movies.values.squeeze())
-        while((u, rv) in total) :
-            rv = random.choice(movies.values.squeeze())
-        user = pd.concat([user, users_onehot.loc[u,:]], axis=1)
-        item = pd.concat([item, movies_onehot.loc[rv,:]], axis=1)
-        y = pd.concat([y, pd.DataFrame([0])]) 
-            
-#%%
-
-last = 1
-user = pd.DataFrame()
-item = pd.DataFrame()
-y = pd.DataFrame()
-
-user_eval = pd.DataFrame()
-item_eval = pd.DataFrame()
-y_eval = pd.DataFrame()
-
-check = []
-i=1
-j=0
-for i in range(len(ratings)):
-
-    user = pd.concat([user ,users_onehot.loc[ratings.iloc[i].user_id,:]], axis=1)
-    item = pd.concat([item, movies_onehot.loc[ratings.movie_id.iloc[i],:]], axis=1)
-    y = pd.concat([y, pd.DataFrame([1])])
-    check.append(ratings.movie_id.iloc[i])
-    
-    for _ in range(len(check)*4):
-        rv = random.choice(movies.index)
-        if rv not in check:
-            user = pd.concat([user, users_onehot.loc[last,:]])
-            item = pd.concat([item, movies_onehot.loc[rv,:]])
-            y = pd.concat([y, pd.DataFrame([0])])
-            
-           
-                
-    check = []
-    last = ratings.user_id.iloc[i+1]
-#%%
-##### user*movie interaction matrix
-# y_mat = pd.DataFrame(np.zeros((len(users), len(movies))), columns=movies.movie_id, index=users.user_id)
-# for i in range(len(ratings)):
-#     y_mat.loc[ratings.user_id.iloc[i], ratings.movie_id.iloc[i]] = 1   
-    
-# y_mat.to_csv("ymat.csv")            
-y_mat = pd.read_csv('ymat.csv', index_col=0)
-#%%
-### y와 user, movie 매칭
-user = pd.DataFrame(np.repeat(users_onehot.values, len(movies_onehot), axis=0))
-user.columns = users_onehot.columns
-user = user.drop(columns=['user_id'])
-
-item = pd.concat([movies_onehot]*len(users_onehot)).drop(columns=['movie_id'])
-
-target = pd.DataFrame(y_mat.to_numpy().flatten())
-target.columns = ["y"]
-
-all = pd.DataFrame()
-for i in range(len(target)):
-    if target.iloc[i,0] == 1 :
-        temp = pd.concat([user.iloc[i],item.iloc[i,:],target.iloc[i,:]])
-        all = pd.concat([all,temp], axis=1)
-
-# all = pd.concat([user.drop(columns=['user_id']),item.drop(columns=['movie_id']),target],axis=1)
-
-#%%
-###########헛짓거리
+#### dummy X
 class CustomDataset(Dataset):
-    def __init__(self, user, item, target):
-        self.user = user.values
-        self.item = item.values
-        self.target = target.values.reshape(-1,1)
+    def __init__(self, total_ratings, ratings, num_negative):
+        self.total_ratings = total_ratings
+        self.ratings = ratings
+        self.num_negative = num_negative
+        self.users, self.items, self.labels = self.data()
         
     def __len__(self):
-        return len(self.user)
+        return len(self.users)
     
     def __getitem__(self, index):
-        user = torch.FloatTensor(self.user[index])
-        item = torch.FloatTensor(self.item[index])
-        target = torch.FloatTensor(self.target[index])
-        return user, item, target
+        return self.users[index], self.items[index], self.labels[index]
+        
+    def data(self):
+        users, items, labels = [], [], []
+        user_item_set = set(zip(self.ratings['user_id'], self.ratings['movie_id']))
+        total_user_item_set = set(zip(self.total_ratings['user_id'], self.total_ratings['movie_id']))
+        movie_ids = self.ratings.movie_id.unique()
+        for u, i in tqdm(user_item_set):
+            users.append(u)
+            items.append(i)
+            labels.append(1)
+            tmp_check = []
 
-# user_train = user.drop(columns=['user_id'])
-# item_train = item.drop(columns=['movie_id'])
-# target_train = target
-                       
-dataset = CustomDataset(user, item, target)
+            for _ in range(self.num_negative):
+                # random sampling
+                negative_item = np.random.choice(movie_ids)
+                # checking interaction
+                while (u, negative_item) in total_user_item_set or negative_item in tmp_check:
+                    negative_item = np.random.choice(movie_ids)
+                users.append(u)
+                items.append(negative_item)
+                labels.append(0)
+                tmp_check.append(negative_item)
+        
+        return torch.FloatTensor(users), torch.FloatTensor(items), torch.FloatTensor(labels)
 
-dataloader = DataLoader(dataset, batch_size=128, shuffle=True)
-
-data = torch.zeros((1,49))
-for batch_idx, samples in enumerate(dataloader):
-    user, item, target = samples
-    all = torch.cat([user, item, target], dim = 1)
-    positive = all[target.squeeze() == 1]
-    negative = all[target.squeeze() == 0]
-    negative = negative[:len(positive)*4]
-    data = torch.cat([data, positive, negative], dim = 0)
-    
-data = data[1:]
-data.shape
 #%%
-#######################
-
-class NCFDataset(Dataset):
-    def __init__(self, data):
-        self.user = data[:,:30]
-        self.item = data[:,30:-1]
-        self.target = data[:,-1]
-        
-    def __len__(self):
-        return len(self.user)
-    
-    def __getitem__(self, index):
-        user = torch.FloatTensor(self.user[index])
-        item = torch.FloatTensor(self.item[index])
-        target = torch.FloatTensor(self.target[index])
-        return user, item, target
-
-
-train_dataset = NCFDataset(data)
+n = 80
+train_dataset = CustomDataset(ratings, train_rating, 4)
+val_dataset = CustomDataset(ratings, val_rating, n)
+test_dataset = CustomDataset(ratings, test_rating, n)
 
 train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+val_dataloader = DataLoader(val_dataset, batch_size=n+1, shuffle=False)
+test_dataloader = DataLoader(test_dataset, batch_size=n+1, shuffle=False)
+
 
 #%%
 
@@ -227,10 +132,10 @@ class NCF(torch.nn.Module):
     def __init__(self, user_d, item_d, predictive_factor):
         super().__init__()
         self.layer = nn.ModuleList()
-        self.MLP_user_embedding = nn.Linear(user_d, 16)
-        self.MLP_item_embedding = nn.Linear(item_d, 16)
-        self.GMF_user_embedding = nn.Linear(user_d, 16)
-        self.GMF_item_embedding = nn.Linear(item_d, 16)
+        self.MLP_user_embedding = nn.Linear(user_d, 16, bias=False)
+        self.MLP_item_embedding = nn.Linear(item_d, 16, bias=False)
+        self.GMF_user_embedding = nn.Linear(user_d, 16, bias=False)
+        self.GMF_item_embedding = nn.Linear(item_d, 16, bias=False)
         self.layer.append(nn.Linear(32, predictive_factor*4))
         self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
         self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
@@ -281,29 +186,55 @@ class NCF(torch.nn.Module):
         return out
 #%%
 
-model = NCF(30, 18, 8)  
+
+##### model evaluation
+def evaluation(dataloader):
+    hit = []
+    ndcg = []
+    for samples in dataloader:
+        
+        user_test, item_test, y_test = samples
+        user_test = user_test.reshape(-1,1)
+        item_test = item_test.reshape(-1,1)
+        y_test = y_test.reshape(-1,1)
+        
+        # prediction 계산
+        prediction = model(user_test, item_test, "ncf")
+        prediction = prediction.tolist()
+        ranking = sorted(prediction, reverse=True)
+        if ranking[9] <= prediction[0]:
+            hit.append(1)
+            rank = ranking.index(prediction[0]) + 1
+            ndcg.append(1/np.log2(rank+1))
+            
+    return sum(hit)/len(test_dataloader), sum(ndcg)/len(test_dataloader)
+    
+evaluation(test_dataloader)
+#%%
+
+model = NCF(1, 1, 8)  
 optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
 # optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
 
 # %%
-nb_epochs = 100
-best_loss = 10 ** 9 # 매우 큰 값으로 초기값 가정
+nb_epochs = 50
+best_hr = 1
 patience_limit = 3 # 몇 번의 epoch까지 지켜볼지를 결정
 patience_check = 0 # 현재 몇 epoch 연속으로 loss 개선이 안되는지를 기록
 val = []
 total_loss = []
             
-for epoch in range(nb_epochs + 1):
+for epoch in tqdm(range(nb_epochs), desc='outer', position=0):
     sum_loss = 0
-    for samples in train_dataloader:
+    for samples in tqdm(train_dataloader, desc='inner', position=1, leave=False):
       
         user_train, item_train, y_train = samples
           
         # prediction 계산
-        prediction = model(user_train, item_train, "mlp")
+        prediction = model(user_train.reshape(-1,1), item_train.reshape(-1,1), "ncf")
 
         # loss 계산
-        loss = nn.BCELoss()(prediction.squeeze(), y_train)
+        loss = nn.BCELoss()(prediction, y_train.reshape(-1,1))
 
         # parameter 조정
         optimizer.zero_grad()
@@ -312,13 +243,102 @@ for epoch in range(nb_epochs + 1):
 
         sum_loss += loss.item()
         
-        
+    total_loss.append(sum_loss/len(train_dataloader))   
+     
     if epoch % 10 == 0:
-        print('Epoch {:4d}/{} Loss: {:.6f}'.format(
-        epoch, nb_epochs, sum_loss/len(train_dataloader)))
-    total_loss.append(sum_loss/len(train_dataloader))
+
+        ### Validation loss Check
+        val_loss = 0
+        for samples in val_dataloader:
+            
+            user_val, item_val, y_val = samples
+
+            val_pred = model(user_val.reshape(-1,1), item_val.reshape(-1,1), "ncf")
+            loss = nn.BCELoss()(val_pred, y_val.reshape(-1,1))
+            val_loss += loss.item()
+        
+        hr, ndcg10 = evaluation(val_dataloader)
+        val.append(val_loss/len(train_dataloader))
+        
+        print('Epoch {:4d}/{} val_Loss: {:.6f} HR: {:6f} NDCG: {:6f}'.format(
+        epoch, nb_epochs, sum_loss/len(train_dataloader), hr, ndcg10))
+        
+        ### early stopping 여부를 체크하는 부분 ###
+        if abs(hr - best_hr) < 1e-5: # loss가 개선되지 않은 경우
+        # if val_loss > best_loss :
+            patience_check += 1
+
+            if patience_check >= patience_limit: # early stopping 조건 만족 시 조기 종료
+                print("Learning End. Best_HR:{:6f}".format(best_hr))
+                break
+
+        else: # loss가 개선된 경우
+            best_hr = hr
+            best_model = copy.deepcopy(model)
+            patience_check = 0
       
 #%%       
 import matplotlib.pyplot as plt
 plt.plot(total_loss)
 # %%
+
+evaluation(test_dataloader)
+
+######################################################################
+
+#%%
+users = ratings.drop_duplicates(subset=['user_id']).drop(columns=['movie_id'])
+users.index = users.user_id
+movies = ratings.drop_duplicates(subset=['movie_id']).drop(columns=['user_id'])
+movies.index = movies.movie_id
+total = set(zip(ratings.user_id, ratings.movie_id))
+
+user, item, y = pd.DataFrame(), pd.DataFrame(), pd.DataFrame() 
+
+import time
+
+for i in tqdm(range(len(ratings))):
+    u = ratings.user_id.iloc[i]
+    m = ratings.movie_id.iloc[i]
+
+    user = pd.concat([user ,users.loc[u,:]], axis=1)
+    item = pd.concat([item, movies.loc[m,:]], axis=1)
+    y = pd.concat([y, pd.DataFrame([1])])
+
+    #negative sampling    
+    for _ in range(4):
+        rv = random.choice(movies.values.squeeze())
+        while((u, rv) in total) :
+            rv = random.choice(movies.values.squeeze())
+        user = pd.concat([user, users.loc[u,:]], axis=1)
+        item = pd.concat([item, movies.loc[rv,:]], axis=1)
+        y = pd.concat([y, pd.DataFrame([0])]) 
+       
+user = user.T
+item = item.T
+
+users, items, labels = [], [], []
+user_item_set = set(zip(test_rating['user_id'], test_rating['movie_id']))
+total_user_item_set = set(zip(ratings['user_id'], ratings['movie_id']))
+movie_ids = ratings.movie_id.unique()
+for u, i in tqdm(user_item_set):
+    users.append(u)
+    items.append(i)
+    labels.append(1)
+    tmp_check = []
+
+    for _ in range(99):
+        # random sampling
+        negative_item = np.random.choice(movie_ids)
+        # checking interaction
+        while (u, negative_item) in total_user_item_set or negative_item in tmp_check:
+            negative_item = np.random.choice(movie_ids)
+        users.append(u)
+        items.append(negative_item)
+        labels.append(0)
+        tmp_check.append(negative_item)
+
+
+users, items, labels = torch.FloatTensor(users), torch.FloatTensor(items), torch.FloatTensor(labels)
+len(users)
+len(user_item_set)

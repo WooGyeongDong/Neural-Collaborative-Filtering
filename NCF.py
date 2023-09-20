@@ -2,10 +2,10 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.optim as optim
+import torch.optim 
 from torch.utils.data import Dataset
 from torch.utils.data import DataLoader
-
+import matplotlib.pyplot as plt
 import pandas as pd
 import numpy as np
 import random
@@ -16,74 +16,32 @@ import copy
 ratings = pd.read_csv('ml-1m/ratings.dat', delimiter='::', header=None, 
     names=['user_id', 'movie_id', 'rating', 'timestamp'], 
     usecols=['user_id', 'movie_id'], engine='python')  ##encoding latin1
-
+movies = pd.read_csv('ml-1m/movies.dat', delimiter='::', header=None, 
+    names=['movie_id', 'title', 'genre'], 
+    usecols=['movie_id'], engine='python')
 #%%
-
 test_rating = ratings.copy()
 test_rating = test_rating.drop_duplicates(subset=['user_id'], keep='last')
+
 train_rating = ratings.copy()
 train_rating = pd.concat([train_rating, test_rating])
 train_rating = train_rating.drop_duplicates(keep=False)
 val_rating = train_rating.copy()
 val_rating = val_rating.sample(frac=1, ignore_index= True)
 val_rating = val_rating.drop_duplicates(subset=['user_id'])
+train_rating = pd.concat([train_rating, val_rating])
+train_rating = train_rating.drop_duplicates(keep=False)
+movie_ids = movies.movie_id.unique()
 
 #%%
-
 class CustomDataset(Dataset):
-    def __init__(self, ratings, num_negative):
-        self.ratings = ratings
-        self.num_negative = num_negative
-        self.users, self.items, self.labels = self.data()
-        
-    def __len__(self):
-        return len(self.users)
-    
-    def __getitem__(self, index):
-        return self.users[index], self.items[index], self.labels[index]
-        
-    def data(self):
-        users = self.ratings.drop_duplicates(subset=['user_id']).drop(columns=['movie_id'])
-        users_onehot = pd.get_dummies(users, columns=['user_id'])
-        users_onehot.index = users.user_id
-        movies = self.ratings.drop_duplicates(subset=['movie_id']).drop(columns=['user_id'])
-        movies_onehot = pd.get_dummies(movies, columns=['movie_id'])
-        movies_onehot.index = movies.movie_id
-        total = set(zip(self.ratings.user_id, self.ratings.movie_id))
-        
-        user, item, y= [], [], []
-        
-        for i in range(len(self.ratings)):
-            u = self.ratings.user_id.iloc[i]
-            m = self.ratings.movie_id.iloc[i]
-        
-            user = pd.concat([user ,users_onehot.loc[u,:]], axis=1)
-            item = pd.concat([item, movies_onehot.loc[m,:]], axis=1)
-            y = pd.concat([y, pd.DataFrame([1])])
-
-            #negative sampling    
-            for _ in range(self.num_negative):
-                rv = random.choice(movies.values.squeeze())
-                while((u, rv) in total) :
-                    rv = random.choice(movies.values.squeeze())
-                user = pd.concat([user, users_onehot.loc[u,:]], axis=1)
-                item = pd.concat([item, movies_onehot.loc[rv,:]], axis=1)
-                y = pd.concat([y, pd.DataFrame([0])]) 
-                
-        user = user.T
-        item = item.T
-        
-        return torch.FloatTensor(user), torch.FloatTensor(item), torch.FloatTensor(y)
-
-
-#%%
-#### dummy X
-class CustomDataset(Dataset):
-    def __init__(self, total_ratings, ratings, num_negative):
+    def __init__(self, total_ratings, ratings, movie_ids, num_negative):
         self.total_ratings = total_ratings
         self.ratings = ratings
         self.num_negative = num_negative
+        self.movie_ids = movie_ids
         self.users, self.items, self.labels = self.data()
+        
         
     def __len__(self):
         return len(self.users)
@@ -95,33 +53,35 @@ class CustomDataset(Dataset):
         users, items, labels = [], [], []
         user_item_set = set(zip(self.ratings['user_id'], self.ratings['movie_id']))
         total_user_item_set = set(zip(self.total_ratings['user_id'], self.total_ratings['movie_id']))
-        movie_ids = self.ratings.movie_id.unique()
         for u, i in tqdm(user_item_set):
             users.append(u)
             items.append(i)
             labels.append(1)
             tmp_check = []
-
-            for _ in range(self.num_negative):
+            
+            negative_ratio = self.num_negative
+            for _ in range(negative_ratio):
                 # random sampling
-                negative_item = np.random.choice(movie_ids)
+                negative_item = np.random.choice(self.movie_ids)
+                
                 # checking interaction
                 while (u, negative_item) in total_user_item_set or negative_item in tmp_check:
-                    negative_item = np.random.choice(movie_ids)
+                    negative_item = np.random.choice(self.movie_ids)
+                    
                 users.append(u)
                 items.append(negative_item)
                 labels.append(0)
                 tmp_check.append(negative_item)
         
-        return torch.FloatTensor(users), torch.FloatTensor(items), torch.FloatTensor(labels)
+        return torch.tensor(users), torch.tensor(items), torch.FloatTensor(labels)
 
 #%%
-n = 80
-train_dataset = CustomDataset(ratings, train_rating, 4)
-val_dataset = CustomDataset(ratings, val_rating, n)
-test_dataset = CustomDataset(ratings, test_rating, n)
+n = 99
+train_dataset = CustomDataset(ratings, train_rating, movie_ids, 4)
+val_dataset = CustomDataset(ratings, val_rating, movie_ids, n)
+test_dataset = CustomDataset(ratings, test_rating, movie_ids, n)
 
-train_dataloader = DataLoader(train_dataset, batch_size=128, shuffle=True)
+train_dataloader = DataLoader(train_dataset, batch_size=512, shuffle=True)
 val_dataloader = DataLoader(val_dataset, batch_size=n+1, shuffle=False)
 test_dataloader = DataLoader(test_dataset, batch_size=n+1, shuffle=False)
 
@@ -132,22 +92,18 @@ class NCF(torch.nn.Module):
     def __init__(self, user_d, item_d, predictive_factor):
         super().__init__()
         self.layer = nn.ModuleList()
-        self.MLP_user_embedding = nn.Linear(user_d, 16, bias=False)
-        self.MLP_item_embedding = nn.Linear(item_d, 16, bias=False)
-        self.GMF_user_embedding = nn.Linear(user_d, 16, bias=False)
-        self.GMF_item_embedding = nn.Linear(item_d, 16, bias=False)
+        self.MLP_user_embedding = nn.Embedding(user_d, 16)
+        self.MLP_item_embedding = nn.Embedding(item_d, 16)
+        self.GMF_user_embedding = nn.Embedding(user_d, 16)
+        self.GMF_item_embedding = nn.Embedding(item_d, 16)
         self.layer.append(nn.Linear(32, predictive_factor*4))
         self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
         self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
-        self.MLP_outlayer = nn.Linear(predictive_factor, 1, bias=False)
-        self.GMF_outlayer = nn.Linear(16, 1, bias=False)
+        self.MLP_outlayer = nn.Linear(predictive_factor, 1)
+        self.GMF_outlayer = nn.Linear(16, 1)
         nn.init.normal_(self.layer[0].weight, mean=0, std=0.01)
         nn.init.normal_(self.layer[1].weight, mean=0, std=0.01)
         nn.init.normal_(self.layer[2].weight, mean=0, std=0.01)
-        nn.init.normal_(self.MLP_user_embedding.weight, mean=0, std=0.01)
-        nn.init.normal_(self.MLP_item_embedding.weight, mean=0, std=0.01)
-        nn.init.normal_(self.GMF_user_embedding.weight, mean=0, std=0.01)
-        nn.init.normal_(self.GMF_item_embedding.weight, mean=0, std=0.01)
         nn.init.normal_(self.MLP_outlayer.weight, mean=0, std=0.01)
         nn.init.normal_(self.GMF_outlayer.weight, mean=0, std=0.01)
 
@@ -165,7 +121,8 @@ class NCF(torch.nn.Module):
             p_g = self.GMF_user_embedding(U)
             q_g = self.GMF_item_embedding(I)
             out_g = p_g*q_g
-            out = F.sigmoid(self.GMF_outlayer(out_g))
+            out_g = self.GMF_outlayer(out_g)
+            out = F.sigmoid(out_g)
             
         if pretrain == "ncf" :
             p_m = self.MLP_user_embedding(U)
@@ -183,23 +140,130 @@ class NCF(torch.nn.Module):
                 
             out = F.sigmoid((0.5*out_m + 0.5*out_g))
             
-        return out
+        return out.reshape(-1)
 #%%
+class MLP(torch.nn.Module):
+    def __init__(self, user_d, item_d, predictive_factor):
+        super().__init__()
+        self.layer = nn.ModuleList()
+        self.user_embedding = nn.Embedding(user_d, 32)
+        self.item_embedding = nn.Embedding(item_d, 32)
+        self.layer.append(nn.Linear(64, predictive_factor*4))
+        self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
+        self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
+        self.layer.append(nn.Linear(predictive_factor, 1))
+
+    def forward(self,U,I):
+        p = self.user_embedding(U)
+        q = self.item_embedding(I)
+        out = torch.cat((p,q),1)
+        
+        for layer in self.layer[:-1] :
+            out = F.relu(layer(out)) 
+            
+        out = F.sigmoid(self.layer[-1](out))
+
+        return out.reshape(-1)
+#%%
+  
+class GMF(torch.nn.Module):
+    def __init__(self, user_d, item_d) -> None:
+        super().__init__()
+        self.user_embedding = nn.Embedding(user_d, 32)
+        self.item_embedding = nn.Embedding(item_d, 32)
+        self.outlayer = nn.Linear(32,1)
+        nn.init.normal_(self.outlayer.weight, mean=0, std=0.01)
+        
+    def forward(self, U, I):
+        p = self.user_embedding(U)
+        q = self.item_embedding(I)
+        out = p*q
+        out = self.outlayer(out) 
+        out = F.sigmoid(out)
+        
+        return out.reshape(-1)
+#%%   
+class NCF(nn.Module):
+    def __init__(self, user_d, item_d, predictive_factor) -> None:
+        super().__init__()
+        self.gmf = GMF(user_d, item_d)
+        self.mlp = MLP(user_d, item_d, predictive_factor)
+        self.output = nn.Linear(predictive_factor+32, 1)
+        
+    def forward(self, U, I):
+        out_g = self.gmf(U, I)
+        out_m = self.mlp(U, I)
+        out  = torch.cat((out_g, out_m),1)
+        out = self.output(out)
+        out = F.sigmoid(out)
+        
+        return out.reshape(-1)
 
 
+#%% 
+class NCF(torch.nn.Module):
+    def __init__(self, user_d, item_d, predictive_factor):
+        super().__init__()
+        self.layer = nn.ModuleList()
+        self.MLP_user_embedding = nn.Embedding(user_d, 32)
+        self.MLP_item_embedding = nn.Embedding(item_d, 32)
+        self.GMF_user_embedding = nn.Embedding(user_d, 32)
+        self.GMF_item_embedding = nn.Embedding(item_d, 32)
+        self.layer.append(nn.Linear(64, predictive_factor*4))
+        self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
+        self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
+        self.layer.append(nn.Linear(predictive_factor+32, 1))
+
+        
+    def pretrain(self, mlp_path, gmf_path):
+        mlp_model = MLP(6041, 3953, 8)
+        mlp_model.load_state_dict(torch.load(mlp_path))
+        gmf_model = GMF(6041, 3953)
+        gmf_model.load_state_dict(torch.load(gmf_path))
+        self.MLP_user_embedding.weight.data = mlp_model.user_embedding.weight.data
+        self.MLP_item_embedding.weight.data = mlp_model.item_embedding.weight.data
+        self.GMF_user_embedding.weight.data = gmf_model.user_embedding.weight.data
+        self.GMF_item_embedding.weight.data = gmf_model.item_embedding.weight.data
+        for i, layer in enumerate(self.layer):
+            layer.weight.data = mlp_model.layer[i].weight.data
+            layer.bias.data = mlp_model.layer[i].bias.data
+            
+        self.layer[-1].weight.data = 0.5 * torch.cat([mlp_model.layer[-1].weight.data, gmf_model.outlayer.weight.data], dim=-1)
+        self.layer[-1].bias.data = 0.5 * (mlp_model.layer[-1].bias.data + gmf_model.outlayer.bias.data)
+
+        
+    def forward(self,U,I):
+        p_g = self.GMF_user_embedding(U)
+        q_g = self.GMF_item_embedding(I)
+        p_m = self.MLP_user_embedding(U)
+        q_m = self.MLP_item_embedding(I)
+        out_m = torch.cat((p_m,q_m),1)
+        
+        for layer in self.layer[:-1] :
+            out_m = F.relu(layer(out_m)) 
+        
+        out_g = torch.mul(p_g,q_g)
+        
+        out = torch.cat((out_g, out_m),1)
+            
+        out = F.sigmoid(self.layer[-1](out))
+
+        return out.reshape(-1)
+#%%
 ##### model evaluation
-def evaluation(dataloader):
+def evaluation(eval_model, dataloader):
     hit = []
     ndcg = []
+    # sum_loss = 0
     for samples in dataloader:
         
         user_test, item_test, y_test = samples
-        user_test = user_test.reshape(-1,1)
-        item_test = item_test.reshape(-1,1)
-        y_test = y_test.reshape(-1,1)
+        y_test = y_test.float()
         
         # prediction 계산
-        prediction = model(user_test, item_test, "ncf")
+        prediction = eval_model(user_test, item_test)
+        # loss = nn.BCELoss()(prediction, y_test)
+        # sum_loss += loss.item()
         prediction = prediction.tolist()
         ranking = sorted(prediction, reverse=True)
         if ranking[9] <= prediction[0]:
@@ -207,83 +271,201 @@ def evaluation(dataloader):
             rank = ranking.index(prediction[0]) + 1
             ndcg.append(1/np.log2(rank+1))
             
-    return sum(hit)/len(test_dataloader), sum(ndcg)/len(test_dataloader)
+    return sum(hit)/len(dataloader), sum(ndcg)/len(dataloader)#, sum_loss/len(dataloader)
     
-evaluation(test_dataloader)
-#%%
-
-model = NCF(1, 1, 8)  
-optimizer = torch.optim.Adam(model.parameters(), lr=1e-4)
-# optimizer = torch.optim.SGD(model.parameters(), lr=1e-4)
 
 # %%
-nb_epochs = 50
-best_hr = 1
-patience_limit = 3 # 몇 번의 epoch까지 지켜볼지를 결정
-patience_check = 0 # 현재 몇 epoch 연속으로 loss 개선이 안되는지를 기록
-val = []
-total_loss = []
+def train(model, optimizer, dataloader, valid_dataloader, nb_epochs) :
+    best_hr = 0
+    total_loss = []
+                
+    for epoch in tqdm(range(nb_epochs)):
+        sum_loss = 0
+        for samples in dataloader:
+        
+            user_train, item_train, y_train = samples
             
-for epoch in tqdm(range(nb_epochs), desc='outer', position=0):
-    sum_loss = 0
-    for samples in tqdm(train_dataloader, desc='inner', position=1, leave=False):
-      
-        user_train, item_train, y_train = samples
-          
-        # prediction 계산
-        prediction = model(user_train.reshape(-1,1), item_train.reshape(-1,1), "ncf")
+            # prediction 계산
+            prediction = model(user_train, item_train)
 
-        # loss 계산
-        loss = nn.BCELoss()(prediction, y_train.reshape(-1,1))
+            # loss 계산
+            loss = nn.BCELoss()(prediction, y_train)
 
-        # parameter 조정
-        optimizer.zero_grad()
-        loss.backward()
-        optimizer.step()
+            # parameter 조정
+            optimizer.zero_grad()
+            loss.backward()
+            optimizer.step()
 
-        sum_loss += loss.item()
-        
-    total_loss.append(sum_loss/len(train_dataloader))   
-     
-    if epoch % 10 == 0:
-
-        ### Validation loss Check
-        val_loss = 0
-        for samples in val_dataloader:
+            sum_loss += loss.item()
             
-            user_val, item_val, y_val = samples
-
-            val_pred = model(user_val.reshape(-1,1), item_val.reshape(-1,1), "ncf")
-            loss = nn.BCELoss()(val_pred, y_val.reshape(-1,1))
-            val_loss += loss.item()
+        total_loss.append(sum_loss/len(dataloader))   
         
-        hr, ndcg10 = evaluation(val_dataloader)
-        val.append(val_loss/len(train_dataloader))
+        ### Validation
         
-        print('Epoch {:4d}/{} val_Loss: {:.6f} HR: {:6f} NDCG: {:6f}'.format(
-        epoch, nb_epochs, sum_loss/len(train_dataloader), hr, ndcg10))
+        hr, ndcg10 = evaluation(model, valid_dataloader)
         
-        ### early stopping 여부를 체크하는 부분 ###
-        if abs(hr - best_hr) < 1e-5: # loss가 개선되지 않은 경우
-        # if val_loss > best_loss :
-            patience_check += 1
-
-            if patience_check >= patience_limit: # early stopping 조건 만족 시 조기 종료
-                print("Learning End. Best_HR:{:6f}".format(best_hr))
-                break
-
-        else: # loss가 개선된 경우
+        print('Epoch {:4d}/{}  HR: {:6f} NDCG: {:6f}'.format(
+        epoch+1, nb_epochs, hr, ndcg10))
+        
+        if hr > best_hr: 
             best_hr = hr
             best_model = copy.deepcopy(model)
-            patience_check = 0
+            
+    return best_model
+        
+
+
       
 #%%       
-import matplotlib.pyplot as plt
+
+
+
+model_mlp = MLP(6041, 3953, 8)
+optimizer = torch.optim.Adam(model_mlp.parameters(), lr=1e-3)
+model_mlp = copy.deepcopy(train(model_mlp, optimizer, train_dataloader, val_dataloader, 5))
+
+model_gmf = GMF(6041, 3953)   
+optimizer = torch.optim.Adam(model_gmf.parameters(), lr=1e-3)
+model_gmf = copy.deepcopy(train(model_gmf, optimizer, train_dataloader, val_dataloader, 5))
+
+torch.save(model_mlp.state_dict(), 'mlp_model.pth')
+torch.save(model_gmf.state_dict(), 'gmf_model.pth')
+
+model = NCF(6041, 3953, 8)
+model.pretrain('mlp_model.pth', 'gmf_model.pth')
+optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
+model = copy.deepcopy(train(model, optimizer, train_dataloader, val_dataloader, 5))
+
+
 plt.plot(total_loss)
+evaluation(model, test_dataloader)
 # %%
 
-evaluation(test_dataloader)
 
+model_mlp.user_embedding.weight.data
+model.MLP_user_embedding.weight.data
+
+
+
+
+
+
+
+
+
+####################################################################33
+
+class NeuMF(torch.nn.Module):
+    def __init__(self, num_users, num_items, latent_dim_mf, latent_dim_mlp, layers):
+        super(NeuMF, self).__init__()
+        self.num_users = num_users
+        self.num_items = num_items
+        self.latent_dim_mf = latent_dim_mf
+        self.latent_dim_mlp = latent_dim_mlp
+
+        self.embedding_user_mlp = torch.nn.Embedding(num_embeddings=self.num_users, embedding_dim=self.latent_dim_mlp)
+        self.embedding_item_mlp = torch.nn.Embedding(num_embeddings=self.num_items, embedding_dim=self.latent_dim_mlp)
+        self.embedding_user_mf = torch.nn.Embedding(num_embeddings=self.num_users, embedding_dim=self.latent_dim_mf)
+        self.embedding_item_mf = torch.nn.Embedding(num_embeddings=self.num_items, embedding_dim=self.latent_dim_mf)
+
+        self.fc_layers = torch.nn.ModuleList()
+        for idx, (in_size, out_size) in enumerate(zip(layers[:-1], layers[1:])):
+            self.fc_layers.append(torch.nn.Linear(in_size, out_size))
+
+        self.affine_output = torch.nn.Linear(in_features=layers[-1] + latent_dim_mf, out_features=1)
+        self.logistic = torch.nn.Sigmoid()
+
+    def forward(self, user_indices, item_indices):
+        user_embedding_mlp = self.embedding_user_mlp(user_indices)
+        item_embedding_mlp = self.embedding_item_mlp(item_indices)
+        user_embedding_mf = self.embedding_user_mf(user_indices)
+        item_embedding_mf = self.embedding_item_mf(item_indices)
+
+        mlp_vector = torch.cat([user_embedding_mlp, item_embedding_mlp], dim=-1)  # the concat latent vector
+        mf_vector =torch.mul(user_embedding_mf, item_embedding_mf)
+
+        for idx, _ in enumerate(range(len(self.fc_layers))):
+            mlp_vector = self.fc_layers[idx](mlp_vector)
+            mlp_vector = torch.nn.ReLU()(mlp_vector)
+
+        vector = torch.cat([mlp_vector, mf_vector], dim=-1)
+        logits = self.affine_output(vector)
+        rating = self.logistic(logits)
+        return rating.view(-1)
+
+
+model = NeuMF(6041, 3953, 8, 8, [16,32,16,8])
+
+
+class NCF(nn.Module):
+    def __init__(
+        self, user_num, item_num, factor_num, num_layers):
+        super(NCF, self).__init__()
+        
+
+        # 임베딩 저장공간 확보; (num_embeddings, embedding_dim)
+        self.embed_user_MLP = nn.Embedding(
+            user_num, factor_num * (2 ** (num_layers - 1))
+        )
+        self.embed_item_MLP = nn.Embedding(
+            item_num, factor_num * (2 ** (num_layers - 1))
+        )
+
+        MLP_modules = []
+        for i in range(num_layers):
+            input_size = factor_num * (2 ** (num_layers - i))
+            MLP_modules.append(nn.Linear(input_size, input_size // 2))
+            MLP_modules.append(nn.ReLU())
+        self.MLP_layers = nn.Sequential(*MLP_modules)
+        predict_size = factor_num
+        self.predict_layer = nn.Linear(predict_size, 1)
+
+    def forward(self, user, item):
+        embed_user_MLP = self.embed_user_MLP(user)
+        embed_item_MLP = self.embed_item_MLP(item)
+        # 임베딩 벡터 합치기
+        interaction = torch.cat((embed_user_MLP, embed_item_MLP), -1)
+        output_MLP = self.MLP_layers(interaction)
+        concat = output_MLP
+
+        # 예측하기
+        prediction = self.predict_layer(concat)
+        prediction = F.sigmoid(prediction)
+        return prediction.view(-1)
+
+model = NCF(6041, 3953, 8, 3)
+
+def hit(gt_item, pred_items):
+    if gt_item in pred_items:
+        return 1
+    return 0
+
+
+def ndcg(gt_item, pred_items):
+    if gt_item in pred_items:
+        index = pred_items.index(gt_item)
+        return np.reciprocal(np.log2(index + 2))
+    return 0
+
+
+def metrics(model, test_loader, top_k):
+    HR, NDCG = [], []
+
+    for user, item, _ in test_loader:
+
+        predictions = model(user, item)
+        # 가장 높은 top_k개 선택
+        _, indices = torch.topk(predictions, top_k)
+        # 해당 상품 index 선택
+        recommends = torch.take(item, indices).cpu().numpy().tolist()
+        # 정답값 선택
+        gt_item = item[0].item()
+        HR.append(hit(gt_item, recommends))
+        NDCG.append(ndcg(gt_item, recommends))
+
+    return np.mean(HR), np.mean(NDCG)
+
+metrics(model, val_dataloader, 10)
 ######################################################################
 
 #%%
@@ -295,7 +477,6 @@ total = set(zip(ratings.user_id, ratings.movie_id))
 
 user, item, y = pd.DataFrame(), pd.DataFrame(), pd.DataFrame() 
 
-import time
 
 for i in tqdm(range(len(ratings))):
     u = ratings.user_id.iloc[i]
@@ -342,3 +523,26 @@ for u, i in tqdm(user_item_set):
 users, items, labels = torch.FloatTensor(users), torch.FloatTensor(items), torch.FloatTensor(labels)
 len(users)
 len(user_item_set)
+
+hit = []
+ndcg = []
+for samples in test_dataloader:
+    
+    user_test, item_test, y_test = samples
+    user_test = user_test.reshape(-1,1)
+    item_test = item_test.reshape(-1,1)
+    
+    # prediction 계산
+    prediction = model(user_test, item_test)
+    prediction = prediction.tolist()
+    ranking = sorted(prediction, reverse=True)
+    if ranking[9] <= prediction[0]:
+        hit.append(1)
+        rank = ranking.index(prediction[0]) + 1
+        ndcg.append(1/np.log2(rank+1))
+        
+sum(hit)/len(test_dataloader), sum(ndcg)/len(test_dataloader)
+
+len(test_dataloader)
+
+nn.Embedding(3761, 16)(item_test)

@@ -26,12 +26,15 @@ test_rating = test_rating.drop_duplicates(subset=['user_id'], keep='last')
 train_rating = ratings.copy()
 train_rating = pd.concat([train_rating, test_rating])
 train_rating = train_rating.drop_duplicates(keep=False)
-val_rating = train_rating.copy()
-val_rating = val_rating.sample(frac=1, ignore_index= True)
-val_rating = val_rating.drop_duplicates(subset=['user_id'])
-train_rating = pd.concat([train_rating, val_rating])
-train_rating = train_rating.drop_duplicates(keep=False)
-movie_ids = movies.movie_id.unique()
+
+# val_rating = train_rating.copy()
+# val_rating = val_rating.sample(frac=1, ignore_index= True)
+# val_rating = val_rating.drop_duplicates(subset=['user_id'])
+
+# train_rating = pd.concat([train_rating, val_rating])
+# train_rating = train_rating.drop_duplicates(keep=False)
+
+movie_ids = ratings.movie_id.unique()
 
 #%%
 class CustomDataset(Dataset):
@@ -78,16 +81,14 @@ class CustomDataset(Dataset):
 #%%
 n = 99
 train_dataset = CustomDataset(ratings, train_rating, movie_ids, 4)
-val_dataset = CustomDataset(ratings, val_rating, movie_ids, n)
+# val_dataset = CustomDataset(ratings, val_rating, movie_ids, n)
 test_dataset = CustomDataset(ratings, test_rating, movie_ids, n)
 
 train_dataloader = DataLoader(train_dataset, batch_size=512, shuffle=True)
-val_dataloader = DataLoader(val_dataset, batch_size=n+1, shuffle=False)
+# val_dataloader = DataLoader(val_dataset, batch_size=n+1, shuffle=False)
 test_dataloader = DataLoader(test_dataset, batch_size=n+1, shuffle=False)
 
-
 #%%
-
 class NCF(torch.nn.Module):
     def __init__(self, user_d, item_d, predictive_factor):
         super().__init__()
@@ -146,12 +147,16 @@ class MLP(torch.nn.Module):
     def __init__(self, user_d, item_d, predictive_factor):
         super().__init__()
         self.layer = nn.ModuleList()
-        self.user_embedding = nn.Embedding(user_d, 32)
-        self.item_embedding = nn.Embedding(item_d, 32)
-        self.layer.append(nn.Linear(64, predictive_factor*4))
+        self.user_embedding = nn.Embedding(user_d, 16)
+        self.item_embedding = nn.Embedding(item_d, 16)
+        self.layer.append(nn.Linear(32, predictive_factor*4))
         self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
         self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
         self.layer.append(nn.Linear(predictive_factor, 1))
+        nn.init.normal_(self.layer[0].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[1].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[2].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[3].weight, mean=0, std=0.01)
 
     def forward(self,U,I):
         p = self.user_embedding(U)
@@ -169,9 +174,9 @@ class MLP(torch.nn.Module):
 class GMF(torch.nn.Module):
     def __init__(self, user_d, item_d) -> None:
         super().__init__()
-        self.user_embedding = nn.Embedding(user_d, 32)
-        self.item_embedding = nn.Embedding(item_d, 32)
-        self.outlayer = nn.Linear(32,1)
+        self.user_embedding = nn.Embedding(user_d, 16)
+        self.item_embedding = nn.Embedding(item_d, 16)
+        self.outlayer = nn.Linear(16,1)
         nn.init.normal_(self.outlayer.weight, mean=0, std=0.01)
         
     def forward(self, U, I):
@@ -182,39 +187,25 @@ class GMF(torch.nn.Module):
         out = F.sigmoid(out)
         
         return out.reshape(-1)
-#%%   
-class NCF(nn.Module):
-    def __init__(self, user_d, item_d, predictive_factor) -> None:
-        super().__init__()
-        self.gmf = GMF(user_d, item_d)
-        self.mlp = MLP(user_d, item_d, predictive_factor)
-        self.output = nn.Linear(predictive_factor+32, 1)
-        
-    def forward(self, U, I):
-        out_g = self.gmf(U, I)
-        out_m = self.mlp(U, I)
-        out  = torch.cat((out_g, out_m),1)
-        out = self.output(out)
-        out = F.sigmoid(out)
-        
-        return out.reshape(-1)
-
 
 #%% 
-class NCF(torch.nn.Module):
+class NeuMF(torch.nn.Module):
     def __init__(self, user_d, item_d, predictive_factor):
         super().__init__()
         self.layer = nn.ModuleList()
-        self.MLP_user_embedding = nn.Embedding(user_d, 32)
-        self.MLP_item_embedding = nn.Embedding(item_d, 32)
-        self.GMF_user_embedding = nn.Embedding(user_d, 32)
-        self.GMF_item_embedding = nn.Embedding(item_d, 32)
-        self.layer.append(nn.Linear(64, predictive_factor*4))
+        self.MLP_user_embedding = nn.Embedding(user_d, 16)
+        self.MLP_item_embedding = nn.Embedding(item_d, 16)
+        self.GMF_user_embedding = nn.Embedding(user_d, 16)
+        self.GMF_item_embedding = nn.Embedding(item_d, 16)
+        self.layer.append(nn.Linear(32, predictive_factor*4))
         self.layer.append(nn.Linear(predictive_factor*4, predictive_factor*2))
         self.layer.append(nn.Linear(predictive_factor*2, predictive_factor))
-        self.layer.append(nn.Linear(predictive_factor+32, 1))
+        self.layer.append(nn.Linear(predictive_factor+16, 1))
+        nn.init.normal_(self.layer[0].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[1].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[2].weight, mean=0, std=0.01)
+        nn.init.normal_(self.layer[3].weight, mean=0, std=0.01)
 
-        
     def pretrain(self, mlp_path, gmf_path):
         mlp_model = MLP(6041, 3953, 8)
         mlp_model.load_state_dict(torch.load(mlp_path))
@@ -254,16 +245,12 @@ class NCF(torch.nn.Module):
 def evaluation(eval_model, dataloader):
     hit = []
     ndcg = []
-    # sum_loss = 0
     for samples in dataloader:
         
-        user_test, item_test, y_test = samples
-        y_test = y_test.float()
+        user_test, item_test, _ = samples
         
         # prediction 계산
         prediction = eval_model(user_test, item_test)
-        # loss = nn.BCELoss()(prediction, y_test)
-        # sum_loss += loss.item()
         prediction = prediction.tolist()
         ranking = sorted(prediction, reverse=True)
         if ranking[9] <= prediction[0]:
@@ -271,11 +258,11 @@ def evaluation(eval_model, dataloader):
             rank = ranking.index(prediction[0]) + 1
             ndcg.append(1/np.log2(rank+1))
             
-    return sum(hit)/len(dataloader), sum(ndcg)/len(dataloader)#, sum_loss/len(dataloader)
+    return sum(hit)/len(dataloader), sum(ndcg)/len(dataloader)
     
 
 # %%
-def train(model, optimizer, dataloader, valid_dataloader, nb_epochs, model_path) :
+def train(model, optimizer, dataloader, valid_dataloader, nb_epochs, model_path="test") :
     best_hr = 0
     total_loss = []
     hr = []
@@ -325,33 +312,29 @@ def train(model, optimizer, dataloader, valid_dataloader, nb_epochs, model_path)
     torch.save(best_model.state_dict(), "{}.pth".format(model_path))        
     return total_loss, hr, ndcg10
         
-
-
-      
+  
 #%%       
-
-
 
 model_mlp = MLP(6041, 3953, 8)
 optimizer = torch.optim.Adam(model_mlp.parameters(), lr=1e-3)
-mlp_loss, mlp_hr, mlp_ndcg = train(model_mlp, optimizer, train_dataloader, val_dataloader, 50,"mlp_model")
+mlp_loss, mlp_hr, mlp_ndcg = train(model_mlp, optimizer, train_dataloader, test_dataloader, 50, "mlp_model")
 pd.DataFrame([mlp_loss, mlp_hr, mlp_ndcg]).to_csv('mlp_result.csv')
 
 
 model_gmf = GMF(6041, 3953)   
 optimizer = torch.optim.Adam(model_gmf.parameters(), lr=1e-3)
-gmf_loss, gmf_hr, gmf_ndcg = train(model_gmf, optimizer, train_dataloader, val_dataloader, 50, "gmf_model")
+gmf_loss, gmf_hr, gmf_ndcg = train(model_gmf, optimizer, train_dataloader, test_dataloader, 50, "gmf_model")
 pd.DataFrame([gmf_loss, gmf_hr, gmf_ndcg]).to_csv('gmf_result.csv')
 
-model_ncf = NCF(6041, 3953, 8)
+model_ncf = NeuMF(6041, 3953, 8)
 optimizer = torch.optim.Adam(model_ncf.parameters(), lr=1e-3)
-ncf_loss, ncf_hr, ncf_ndcg = train(model_ncf, optimizer, train_dataloader, val_dataloader, 50, "ncf_model")
+ncf_loss, ncf_hr, ncf_ndcg = train(model_ncf, optimizer, train_dataloader, test_dataloader, 50, "ncf_model")
 pd.DataFrame([ncf_loss, ncf_hr, ncf_ndcg]).to_csv('ncf_result.csv')
 
-model = NCF(6041, 3953, 8)
+model = NeuMF(6041, 3953, 8)
 model.pretrain('mlp_model.pth', 'gmf_model.pth')
 optimizer = torch.optim.SGD(model.parameters(), lr=1e-3)
-loss, hr, ndcg = train(model, optimizer, train_dataloader, val_dataloader, 50, "pretrain_ncf_model")
+loss, hr, ndcg = train(model, optimizer, train_dataloader, test_dataloader, 50, "pretrain_ncf_model")
 pd.DataFrame([loss, hr, ndcg]).to_csv('pretrain_ncf_result.csv')
 
 
@@ -359,8 +342,8 @@ pd.DataFrame([loss, hr, ndcg]).to_csv('pretrain_ncf_result.csv')
 
 plt.plot(mlp_loss, label="MLP")
 plt.plot(gmf_loss, label="GMF")
-plt.plot(ncf_loss, label="NCF")
-plt.plot(loss, label="Pretrained NCF")
+plt.plot(ncf_loss, label="NeuMF")
+plt.plot(loss, label="PretrainedNeuMF")
 plt.xlabel("iter")
 plt.ylabel("Train Loss")
 plt.legend(loc = "upper right")
@@ -368,8 +351,8 @@ plt.show()
 
 plt.plot(mlp_hr, label="MLP")
 plt.plot(gmf_hr, label="GMF")
-plt.plot(ncf_hr, label="NCF")
-plt.plot(hr, label="Pretrained NCF")
+plt.plot(ncf_hr, label="NeuMF")
+plt.plot(hr, label="Pretrained NeuMF")
 plt.xlabel("iter")
 plt.ylabel("HR@10")
 plt.legend(loc = "lower right")
@@ -377,8 +360,8 @@ plt.show()
 
 plt.plot(mlp_ndcg, label="MLP")
 plt.plot(gmf_ndcg, label="GMF")
-plt.plot(ncf_ndcg, label="NCF")
-plt.plot(ndcg, label="Pretrained NCF")
+plt.plot(ncf_ndcg, label="NeuMF")
+plt.plot(ndcg, label="Pretrained NeuMF")
 plt.xlabel("iter")
 plt.ylabel("NDCG@10")
 plt.legend(loc = "lower right")

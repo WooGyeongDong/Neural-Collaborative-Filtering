@@ -11,7 +11,7 @@ $$Y=a_{out}(\begin{pmatrix}
 \end{pmatrix}h)$$
 GMF는 두 Latent 행렬 간의 선형적인 관계를 모델링 하고 MLP는 비선형적 관계를 모델링한다.
 이 둘을 조합한 모형을 Neural Matrix Factorization(NeuMF)라고 하며 선형적 관계와 비선형적 관계를 모두 잘 표현할 수 있는 모형을 목표로 한다.
-![화면 캡처 2023-09-21 182932.png](https://www.dropbox.com/scl/fi/y851l93qeo92lh4eoixoq/2023-09-21-182932.png?rlkey=0acs2rnytxpot2i06ko5l7yqj&dl=0&raw=1)
+![ncf](https://github.com/WooGyeongDong/NCF/assets/143774643/0bc8dddf-1f15-47f4-af1c-4fa5cea9f438)
 
 ### 데이터 설명
 - 분석에 사용한 데이터는 MovieLens-1m 데이터로 6,040명의 사용자가 3,706개의 영화를 인당 최소 20편 이상 점수를 매긴 자료이다. 총 1,000,209개의 점수가 기록되어있다.

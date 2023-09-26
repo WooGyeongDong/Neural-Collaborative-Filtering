@@ -3,12 +3,15 @@ Neural Collavorative Filtering
 
 ### Fusion of GMF and MLP
 - $$\phi^{GMF}=P\odot Q$$
+
 $$\phi^{MLP}=a_L(a_{L-1}((\cdots a_2(\begin{pmatrix}
 P & Q \\
 \end{pmatrix}W^T_2+b_2)\cdots)W_{L-1}^T+b_{L-1})W_L^T+b_L)$$
+
 $$Y=a_{out}(\begin{pmatrix}
 \phi^{GMF} & \phi^{MLP} \\
 \end{pmatrix}h)$$
+
 GMF는 두 Latent 행렬 간의 선형적인 관계를 모델링 하고 MLP는 비선형적 관계를 모델링한다.
 이 둘을 조합한 모형을 Neural Matrix Factorization(NeuMF)라고 하며 선형적 관계와 비선형적 관계를 모두 잘 표현할 수 있는 모형을 목표로 한다.
 ![ncf](https://github.com/WooGyeongDong/NCF/assets/143774643/0bc8dddf-1f15-47f4-af1c-4fa5cea9f438)
